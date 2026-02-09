@@ -1,0 +1,1097 @@
+---
+title: "24.09.10_Evaluación Módulo 9"
+author: "Cristóbal León-Salas"
+date: "2024-09-10"
+output:
+  html_document:
+    theme: cerulean
+    highlight: kate
+    fig_width: 8
+    fig_height: 5
+    fig_caption: true
+    code_folding: show
+    number_sections: true
+    toc: true
+    toc_float:
+      collapsed: true
+      smooth_scroll: false
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+options(warn = -1) #Para eliminar los mensajes Warnings del KML generado
+
+```
+
+------------------------------------------------------------------------
+
+# Carga de librerías
+
+Se cargan todas las librerias que van a ser usadas durante el ejercicio:
+
+```{r 0.0. Carga de librerias}
+
+suppressPackageStartupMessages({
+           library(udpipe) # Para el análisis lingüístico
+           library (dplyr)
+           library(lattice)
+           library(textrank)
+           library(kableExtra)
+           library(igraph)
+           library(ggraph)
+           library(wordcloud)
+           library(visNetwork)
+           library(text2vec) # Para Modelo Glove
+           library(Rtsne)
+           library(ggplot2)
+           library(ggrepel)
+           library(ggiraph) # Para gráfico interactivo visualización word embeddings
+           library(ROSE) #Para el balanceo
+           library(caret)
+           library(stringr)
+           library(fastrtext) # Para el modelo de clasificación de textos
+           library(reticulate) # Permite interactuar entre R y Python
+                    })
+
+```
+
+# Carga de datos
+
+Se procede a la carga de los datos contenidos en el arhivo: evaluacion.RData.
+
+El archivo `evaluacion.RData` contiene dos dataframes:<br>
+<br>
+- **prado**: Cuenta Twitter del Museo del Prado, con 1,158 tuits (desde 01-01-2021 al 30-06-2022).<br>
+- **reviews**: Contiene 13,241 críticas sobre el alojamiento en diversas ciudades de Andalucía.
+
+
+```{r 0.1. Carga de datos}
+
+load("evaluacion.RData")
+
+# Se observa que el archivo contiene dos dataframes, cuyas dimensiones son las siguientes:
+
+print(paste("El dataframe llamado prado contiene", dim (prado)[1], "filas y", dim (prado)[2], "columnas."))
+print(paste("El dataframe llamado reviews contiene", dim (reviews)[1], "filas y", dim (reviews)[2], "columnas."))
+
+```
+
+# Funciones
+
+```{r Función sumilitudes}
+
+similitudes <- function(w, n=5){ #Se define una función llamada similitudes que toma dos argumentos: w, que es la palabra para la cual se calcularán las similitudes, y n, que es el número de palabras más similares a devolver (por defecto es 5).
+    wv <- word_vectors[w, , drop = FALSE] #Se extrae el vector de palabras correspondiente a la palabra w del conjunto de vectores de palabras word_vectors.
+    cos_sim <- sim2(x = word_vectors, y = wv, method = "cosine", norm = "l2") #Se calcula la similitud de coseno entre todos los vectores de palabras (word_vectors) y el vector de palabras wv utilizando la función sim2. El método utilizado es “cosine” y la normalización es “l2”.
+    head(sort(cos_sim[,1], decreasing = TRUE), n) #Se ordenan las similitudes de coseno en orden descendente y se seleccionan las n palabras más similares utilizando la función head.
+}
+
+```
+
+
+# PREGUNTA 1: Text Mining - dataframe prado
+
+Según el enunciado, la descripción de las columnas del dataframe "prado" es el siguiente:<br>
+<br>
+- **created_at**: Fecha de publicación del tuit. Desde el 01‐01‐2021 hasta el 30‐06‐2022.<br>
+- **text**: El texto del tuit.
+
+## Limpieza del texto
+
+Para realizar text mining al texto de los tuits, es importante depurar previamente el texto. <br>
+Como por ejemplo, eliminar: usuarios de Twitter, hashtags, URLs,…<br>
+Para realizar la limpieza del texto, podemos utilizar el siguiente script:
+
+```{r 1.1. Limpieza del texto dataframe prado}
+
+# === Limpieza de Texto ===
+prado$textmining <- prado$text
+# Quitar "@usuario"
+prado$textmining <- gsub("@\\w+", "", prado$textmining) # La función gsub en R es utilizada para buscar patrones de texto específicos dentro de un string o vector de strings y reemplazarlos por otro texto
+# Quitar "#hashtag"
+prado$textmining <- gsub("#\\w+", "", prado$textmining)
+# Quitar "URL"
+prado$textmining <- gsub("http[^[:blank:]]*", "", prado$textmining)
+# Quitar "e-Mail"
+prado$textmining <- gsub("\\w+@\\w+.\\w+", "", prado$textmining)
+# Si fuera necesario, añadir espacio después de "punto","coma","punto y coma","dos puntos"
+prado$textmining <- gsub("([.]|,|;|:)([[:alpha:]])", "\\1 \\2", prado$textmining)
+# Conservar letras, dígitos, espacios en blanco, saltos de línea y caracteres de puntuación
+prado$textmining <- gsub("[^[:alpha:][:digit:][:space:][:punct:]]*", "", prado$textmining)
+# Eliminar espacios en blanco sobrantes
+prado$textmining <- gsub("\\s{2,}", " ", prado$textmining)
+# Elimino signos de puntuación
+prado$textmining <- gsub("[\\?¿\"'-:ºª;,.¡!@#$%&/()='_+*{}<>^~|\\\\`‘–…’€]", "", prado$textmining)
+# Otros
+prado$textmining <- gsub("⬇️", "", prado$textmining)
+
+# Quitar espacios en blanco al inicio y final del texto
+prado$textmining <- trimws(prado$textmining) # La función trimws en R se utiliza para eliminar los espacios en blanco al principio y al final de una cadena de texto. Esta función es especialmente útil cuando se trabaja con datos de texto y se desea limpiar cualquier espacio extra que pueda haberse introducido accidentalmente. Aquí, trimws se aplica a la columna textmining del dataframe prado, eliminando cualquier espacio en blanco al inicio y al final de cada cadena de texto en esa columna.
+
+```
+
+## Análisis lingüístico
+
+### Eliminación de stop-words:
+
+Antes de comenzar con el análisis lingüístico, es conveniente eliminar del corpus ciertas palabras, locuciones o expresiones de uso común, que no aportan información significativa sobre el contenido del texto y pueden sesgar los resultados si no se eliminan. De modo que:
+
+```{r 1.2. Eliminación de stop-words}
+
+# Crear una lista de stopwords en español e inglés
+stopwords <- c(
+  # Expresiones comunes
+  "sin embargo", "however", "sin duda", "without a doubt", "sin ninguna duda", 
+  "undoubtedly", "sin lugar a dudas","así", "like this", "like that", 
+  "de esta manera", "de ese modo", "de esa manera", "this way", 
+  "that way", "tal", "such", "no doubt", "a simple vista", "at first glance", 
+  "a primera vista", "at first sight", "punto de vista", "point of view", 
+  "tal vez", "perhaps", "maybe", "por primera vez", "for the first time", 
+  "por última vez", "for the last time", "a la vez", "at the same time", 
+  "al mismo tiempo", "simultaneously", "por supuesto", "of course", 
+  "al final", "in the end", "gracias a", "thanks to", "gracias al", "thanks to the", 
+  "a pesar de", "despite", "in spite of", "por otra parte", "on the other hand", 
+  "por su parte", "for its part", "en gran parte", "in great part", "gran parte de", 
+  "a large part of", "gran parte del", "a large part of the", "mayor parte", "most", 
+  
+  # Conjunciones
+  "y", "and", "o", "or", "pero", "but", "aunque", "although", "sino", "but", "ni", "nor", 
+  "que", "that", "como", "like", "as",
+  
+  # Pronombres
+  "yo", "I", "tú", "you", "él", "he", "ella", "she", "nosotros", "we", "vosotros", "you", 
+  "ellos", "they", "ellas", "they", "me", "me", "te", "you", "se", "himself", "nos", "us", "os", "you all",
+  
+  # Pronombres posesivos
+  "mi", "my", "mis", "my", "tu", "your", "tus", "your", "su", "his", "sus", "their", "nuestro", "our", 
+  "nuestra", "our", "nuestros", "our", "nuestras", "our", "vuestro", "your", "vuestra", "your", 
+  "vuestros", "your", "vuestras", "your", "mine", "yours", "theirs", "ours",
+  
+  # Adverbios
+  "muy", "very", "ya", "already", "aquí", "here", "allí", "there", "ahora", "now", "aún", "still", 
+  "más", "more", "menos", "less", "casi", "almost", "bastante", "quite", "antes", "before",
+  
+  # Determinantes demostrativos
+  "este", "esta", "estos", "estas", "that", "this", "these", "those", 
+  "ese", "esa", "esos", "esas", "that", "those", 
+  "aquel", "aquella", "aquellos", "aquellas",
+  
+  # Otros
+  "también", "also", "too", "entonces", "then", "además", "besides", "moreover", 
+  "luego", "later", "siempre", "always", "nunca", "never", "bien", "well", "mal", "badly", 
+  "si", "if", "qué", "solo", "only", "etcétera", "etc", "and so on", "et cetera"
+)
+
+
+# Crear el patrón de expresión regular uniendo las palabras con "|"
+pattern <- paste0("\\b(", paste(stopwords, collapse = "|"), ")\\b")
+
+# Usar gsub para eliminar las stopwords en un solo paso, ignorando mayúsculas y minúsculas
+prado$textmining <- gsub(pattern, "", prado$textmining, ignore.case = TRUE)
+
+
+```
+
+### Eliminación letras sueltas:
+
+Termino por eliminar aquellas "palabras" compuestas por una única letra y que, en realidad, no aportan información alguna:
+
+```{r 1.3. Eliminación letras sueltas}
+
+prado$textmining <- gsub("\\b[a-zA-Z]\\b", "", prado$textmining)
+
+prado$textmining <- trimws(prado$textmining)
+prado$textmining<- gsub("\\s{2,}", " ", prado$textmining) #Reemplaza dos o mas espacios
+
+```
+
+### Análisis
+
+```{r 1.4. Análisis}
+
+model <- udpipe_load_model(file = "spanish-gsd-ud-2.5-191206.udpipe")
+x <- udpipe(x = prado$textmining, model, parallel.cores = parallel::detectCores(), parser = "none")
+x <- as.data.frame(x)
+x$lemma <- tolower(x$lemma)
+
+# Comprobación que no quedan signos de puntuación en el dataframe x:
+P = x %>% filter(upos == "PUNCT")
+nrow(P)
+
+# Como P no tiene filas, se comprueba que no existen ya signos de puntuación en ninguna de las observaciones.
+
+# Compruebo si hubiera algún lema etiquetado como "X" que pudiera ser relevante. El valor X en la columna upos indica que la palabra no se puede clasificar en ninguna de las categorías gramaticales estándar. Esto puede ocurrir por varias razones, como errores en el texto, palabras desconocidas o elementos que no encajan en las categorías tradicionales.
+
+x %>% filter(upos == "X") %>% group_by(lema=lemma) %>%
+      summarize(freq=n(), .groups = "drop") %>% arrange(-freq) %>% head(20)
+
+# Destaca la palabra "online", la cual genera dudas, puesto que puede funcionar tanto como sustantivo y como adjetivo:
+
+obs_online = x %>% filter(tolower(x$token) == "online") %>% select (sentence)
+
+# Se comprueba que todas las observaciones referidas a la palabra "online"actuán como adjetivo. Por tanto:
+
+x$upos[tolower(x$token) == "online"] <- "ADJ"
+
+```
+
+## Términos más frecuentes
+
+```{r 1.5. Términos más frecuentes}
+
+# Busco los términos frecuentes entre los sustantivos y adjetivos
+
+terminos <- subset(x, upos %in% c("NOUN", "ADJ"))
+terminos <- txt_freq(terminos$lemma)
+terminos$key <- factor(terminos$key, levels = rev(terminos$key))
+barchart(key ~ freq, data = head(terminos, 20), col = "cadetblue",
+         main = list("Términos más frecuentes", cex="1"), xlab = "Frecuencia")
+
+# Se observa que las palabras que tienen como lema "exposión" destacan sobre el resto por su frecuencia. También destacar los lemas "museo" y "obra"
+
+```
+
+## Palabras clave
+
+### Rake
+
+```{r 1.6. Rake (Rapid Automatic Keyword Extraction)}
+
+# El enunciado indica lo siguiente: "Además de sustantivos y adjetivos, plantéate incluir nombres propios"
+
+# RAKE (Rapid Automatic Keyword Extraction) es un algoritmo utilizado para la extracción de palabras clave de un texto. Es un método no supervisado que identifica las palabras clave más relevantes basándose en la frecuencia de aparición y la co-ocurrencia de palabras dentro del texto.
+
+#Co-ocurrencia: la co-ocurrencia se refiere a la frecuencia con la que dos o más palabras aparecen juntas en un corpus de texto, como una colección de páginas web o documentos.
+
+kwrake <- keywords_rake(x, term = "lemma", group = "doc_id",
+                        relevant = x$upos %in% c("NOUN", "ADJ","PROPN"), ngram_max = 3)
+
+# ngram_max especifica el número máximo de palabras que puede tener cada palabra clave extraída, es decir, por aquello de la co-ocurrencia.
+
+kwrake <- subset(kwrake, freq > 5 & ngram > 1)
+kwrake$key <- factor(kwrake$keyword, levels = rev(kwrake$keyword))
+barchart(key ~ rake, data = head(kwrake,30), col = "cadetblue",
+         main = list("Palabras Clave: RAKE", cex="1"), xlab = "RAKE")
+
+# Destaca sobre todos el término exposición pasiones mitológico
+
+# Modifico el lema de los términos "exposición pasiones mitológico", "pintura motológico", "tecnico estilístico narrativo", "pintura negro", "granada comisario"
+
+x$token_anterior <- txt_previous(x$token, n = 1)
+x$token_siguiente <- txt_next(x$token, n = 1)
+
+x$lemma[tolower(x$token) == "mitológicas" & tolower(x$token_anterior) == "pasiones"] <- "mitológicas"
+x$lemma[tolower(x$token) == "mitológica" & tolower(x$token_anterior) == "pintura"] <- "mitológica"
+x$lemma[tolower(x$token) == "europea" & tolower(x$token_anterior) == "mitológica"] <- "europea"
+x$lemma[tolower(x$token) == "técnica" & tolower(x$token_siguiente) == "estilística"] <- "técnica"
+x$lemma[tolower(x$token) == "estilística" & tolower(x$token_anterior) == "técnica" & tolower(x$token_siguiente) == "narrativa"] <- "estilística"
+x$lemma[tolower(x$token) == "narrativa" & tolower(x$token_anterior) == "estilística"] <- "narrativa"
+x$lemma[tolower(x$token) == "negra" & tolower(x$token_anterior) == "pintura"] <- "negra"
+x$lemma[tolower(x$token) == "comisaría" & tolower(x$token_anterior) == "granada"] <- "comisaría"
+
+# Es reseñable que aparecen muchos nombres con apellidos. Es por ello que voy aumentar el número de palabras máximas a 5 para obtener una mayor precisión:
+
+kwrake <- keywords_rake(x, term = "lemma", group = "doc_id",
+                        relevant = x$upos %in% c("NOUN", "ADJ","PROPN"), ngram_max = 5)
+
+kwrake <- subset(kwrake, freq > 5 & ngram > 1)
+kwrake$key <- factor(kwrake$keyword, levels = rev(kwrake$keyword))
+barchart(key ~ rake, data = head(kwrake,30), col = "cadetblue",
+         main = list("Palabras Clave: RAKE", cex="1"), xlab = "RAKE")
+
+```
+
+Una vez hecho el análisis con el algoritmo RAKE, pasamos al PMI
+
+### PMI
+
+```{r 1.7. PMI (Pointwise Mutual Information)}
+
+# PMI es una medida utilizada para identificar la asociación entre dos palabras en un corpus de texto. Cuanto mayor sea el valor de PMI, más fuerte es la asociación entre las palabras
+
+kwpmi <- keywords_collocation(subset(x, !(upos %in% c("SYM"))),
+                              term = "lemma", group = "doc_id", n_min = 10)
+kwpmi$key <- factor(kwpmi$keyword, levels = rev(kwpmi$keyword))
+barchart(key ~ pmi, data = head(kwpmi,30), col = "cadetblue",
+         main = list("Palabras Clave: Colocación PMI", cex="1"),
+         xlab = "PMI (Pointwise Mutual Information)")
+
+# Destacan la asociación entre estas palabras "valdés y leal" y "amistad y donaciones". Como no puede ser de otra manera, destacan la importante cantidad de observaciones con nombres de personas (nombre + apellido).
+
+x$lemma[tolower(x$token) == "gratuita" & tolower(x$token_anterior) == "inscripción"] <- "gratuita"
+x$lemma[tolower(x$token) == "inscripciones" & tolower(x$token_siguiente) == "gratuitas"] <- "inscripciones"
+x$lemma[tolower(x$token) == "gratuitas" & tolower(x$token_anterior) == "inscripciones"] <- "gratuitas"
+
+```
+
+### Extracción de Frases
+
+```{r 1.8. Extracción de Frases}
+
+x$phrase_tag <- as_phrasemachine(x$upos, type = "upos") #as_phrasemachine(x$upos, type = "upos"): Esta función toma un vector de etiquetas POS universales (upos) y las convierte en etiquetas de una sola letra. 
+# Etiqueto los pronombres y los números como "Otros elementos"
+
+x$phrase_tag[x$upos=="PRON"] <- "O" 
+x$phrase_tag[x$upos=="NUM"] <- "O"
+
+# Obtener frases nominales simples
+kwphrases <- keywords_phrases(x$phrase_tag, term = tolower(x$token),
+                              pattern = "(A|N)*N(P+D*(A|N)*N)*",
+                              is_regex = TRUE, detailed = FALSE) 
+# is_regex = TRUE --> Indica que el patrón es una expresión regular, no una cadena literal.
+# detailed = FALSE --> Si es FALSE, la función probablemente devuelve un resultado más simplificado, sin detalles adicionales.
+kwphrases <- subset(kwphrases, freq > 5 & ngram > 1)
+kwphrases$key <- factor(kwphrases$keyword, levels = rev(kwphrases$keyword))
+barchart(key ~ freq, data = head(kwphrases,30), col = "cadetblue",
+         main = list("Palabras Clave: Frases nominales simples", cex="1"), xlab = "Frecuencia")
+
+# Destacan las frases "video de la conferencia" y "canal de youtube"
+
+# Eliminamos las palabras clave que forman parte de otras palabras clave con más n-gramas.
+
+v <- sapply(kwphrases$keyword, function(x) length(grep(x,kwphrases$keyword,value=TRUE)))
+v <- v[v == 1]
+kwphrases <- subset(kwphrases, keyword %in% names(v))
+
+kwphrases$key <- factor(kwphrases$keyword, levels = rev(kwphrases$keyword))
+barchart(key ~ freq, data = head(kwphrases,30), col = "cadetblue",
+         main = list("Palabras Clave: Frases nominales simples", cex="1"), xlab = "Frecuencia")
+
+# Ahora la frase que destaca por su frecuencia sobre el resto es "canal de youtube"
+
+```
+
+### TextRank
+
+```{r 1.9. TextRank}
+
+kwtextrank <- textrank_keywords(x$lemma, relevant = x$upos %in% c("NOUN", "ADJ","PROPN"),
+                                ngram_max = 8, sep = " ")
+kwtextrank <- subset(kwtextrank$keywords, freq > 5 & ngram > 1)
+kwtextrank$key <- factor(kwtextrank$keyword, levels = rev(kwtextrank$keyword))
+barchart(key ~ freq, data = head(kwtextrank,30), col = "cadetblue",
+         main = list("Palabras Clave: TextRank", cex="1"), xlab = "Frecuencia")
+
+x$lemma[tolower(x$token) == "impartida" & tolower(x$token_anterior) == "conferencia"] <- "impartida"
+x$lemma[tolower(x$token) %in% c("maestra", "maestras") & tolower(x$token_anterior) %in% c("obra", "obras")] <- "maestra"
+x$lemma[tolower(x$token) %in% c("nueva", "nuevas") & tolower(x$token_siguiente) %in% c("sala", "salas")] <- "nueva"
+
+#Al igual que ocurriera anteriormente, eliminamos las palabras clave que forman parte de otras palabras clave con más n-gramas:
+
+v <- sapply(kwtextrank$keyword, function(x) length(grep(x,kwtextrank$keyword,value=TRUE)))
+v <- v[v == 1]
+kwtextrank <- subset(kwtextrank, keyword %in% names(v))
+
+kwtextrank$key <- factor(kwtextrank$keyword, levels = rev(kwtextrank$keyword))
+barchart(key ~ freq, data = head(kwtextrank,30), col = "cadetblue",
+         main = list("Palabras Clave: TextRank", cex="1"), xlab = "Frecuencia")
+
+# Una pálabra clave que se destaca es hijo pródigo, barroco andaluz, fundación amigos, capilla herrera y conferencia compartida
+
+kwtextrank <- textrank_keywords(tolower(x$token), relevant = x$upos %in% c("NOUN", "ADJ","PROPN"),
+                                ngram_max = 8, sep = " ")
+kwtextrank <- subset(kwtextrank$keywords, freq > 7 & ngram > 1)
+v <- sapply(kwtextrank$keyword, function(x) length(grep(x,kwtextrank$keyword,value=TRUE)))
+v <- v[v == 1]
+kwtextrank <- subset(kwtextrank, keyword %in% names(v))
+kwtextrank$key <- factor(kwtextrank$keyword, levels = rev(kwtextrank$keyword))
+wordcloud(words=kwtextrank$key, freq=kwtextrank$freq, scale=c(2,.5),
+          random.order=F, colors=brewer.pal(8,"Dark2"))
+
+```
+
+## Coocurrencias
+
+```{r 1.10. Coocurrencias}
+
+# Como se vió anteriormente las coocurrencias se refieren a la frecuencia con la que dos o más palabras aparecen juntas en un corpus de texto. De modo que:
+
+terminos <- subset(x, upos %in% c("ADJ", "NOUN","PROPN"))
+# Qué palabras están juntas
+cooc_j <- data.frame(cooccurrence(terminos$lemma))
+head(cooc_j, 20) %>% kbl(caption = "Principales concurrencias") %>% kable_minimal()
+
+#Represento en un plano 2D cada unas de las palbras para ver las concurrencias que presentan cada unas (palabras juntas) más frecuentes
+wordnetwork <- graph_from_data_frame(head(cooc_j, 120))
+ggraph(wordnetwork, layout = "fr") +
+  geom_edge_link(aes(width = cooc, edge_alpha = cooc), edge_colour = "deepskyblue") +
+  geom_node_text(aes(label = name), col = "darkgreen", size = 3) +
+  theme_graph(base_family = "sans") + theme(legend.position = "none") +
+  labs(title = "Coocurrencias (palabras juntas)", subtitle = "Sustantivos, Adjetivos y Nombres Propios") +
+  theme(plot.title = element_text(size = 14), plot.margin = margin(0,0,0,0))
+
+#El gráfico anterior lo replico para reprentar las concurrencias de palabras próximas
+
+cooc_p <- data.frame(cooccurrence(terminos$lemma, skipgram = 1))
+# Visualizar coocurrencias
+wordnetwork <- graph_from_data_frame(head(cooc_p, 120))
+ggraph(wordnetwork, layout = "fr") +
+  geom_edge_link(aes(width = cooc, edge_alpha = cooc), edge_colour = "deepskyblue") +
+  geom_node_text(aes(label = name), col = "darkgreen", size = 3) +
+  theme_graph(base_family = "sans") +
+  labs(title = "Coocurrencias (palabras próximas)", subtitle = "Sustantivos, Adjetivos y Nombres Propios") +
+  theme(plot.title = element_text(size = 14), plot.margin = margin(0,0,0,0))
+
+```
+
+## Correlaciones
+
+```{r 1.11. Correlaciones}
+
+terminos <- subset(x, upos %in% c("ADJ", "NOUN", "PROPN"))
+terminos$id <- unique_identifier(terminos, fields = c("doc_id", "sentence_id"))
+
+# Se genera una matriz de frecuencias de documentos
+dtm <- document_term_frequencies(terminos, document = "id", term = "lemma")
+dtm <- document_term_matrix(dtm)
+dtm <- dtm_remove_lowfreq(dtm, minfreq = 18)
+# Crear la matriz de correlación de términos
+termcorr <- dtm_cor(dtm)
+# Convertir esta matriz en un dataframe de coocurrencia
+df <- as_cooccurrence(termcorr)
+# "Grado de coocurrencia" superior a 0.2
+df$cooc <- abs(df$cooc)
+df <- subset(df, term1 < term2 & cooc > 0.2)
+df <- df[order(df$cooc, decreasing=TRUE), ]
+rownames(df) <- NULL
+
+# Visualizar las correlaciones
+# Se construye un grafo visual donde los nodos representan los términos y las aristas indican el grado de correlación entre ellos, con un diseño visual ajustado para mostrar los términos con mayor coocurrencia.
+wordnetwork <- graph_from_data_frame(head(df, 120))
+ggraph(wordnetwork, layout = "fr") +
+  geom_edge_link(aes(width = cooc, edge_alpha = cooc), edge_colour = "deepskyblue") +
+  geom_node_text(aes(label = name), col = "darkgreen", size = 3) +
+  theme_graph(base_family = "sans") + theme(legend.position = "none") +
+  labs(title = "Correlaciones", subtitle = "Sustantivos, Adjetivos y Nombres Propios") +
+  theme(plot.title = element_text(size = 14), plot.margin = margin(0,0,0,0))
+
+```
+
+## Clasificación tuits
+
+```{r 1.12. Clasificación tuits - A partir de concurrencias obtenidas}
+
+# Examinando las coocurrencias próximas obtenidas
+
+# Analizo en primer lugar los lemmas exposición y pintor:
+
+fil = subset(x, lemma %in% c("pintor","exposición"))
+upos_fil = unique(fil$upos)
+upos_fil
+
+#Obtengo que ambos lemas aparece tanto como sustantivo como nombre propio, por tanto:
+
+# Tomo solo los upos anteriormente obtenidos:
+terminos_Class <- subset(x, upos %in% c("NOUM", "PROPN"))
+nombres <- unique(terminos_Class$lemma)
+
+#Tomo las observaciones donde en ambos términos de la matriz coocurrencias haya un nombre propio y además, cuando uno de los términos sea exposición:
+coocurrencias_pintores_p <- cooc_p %>%
+  filter((term1 %in% nombres & term2 %in% nombres))
+
+#Represento nuevamente estas coocurrencias:
+
+colnames(coocurrencias_pintores_p)[3] <- "width"
+coocurrencias_pintores_p$width <- scales::rescale(coocurrencias_pintores_p$width, to = c(0, 25))
+
+wordnetwork <- graph_from_data_frame(head(coocurrencias_pintores_p, 150))
+visIgraph(wordnetwork) %>%
+  visEdges(color = list(color = "gray", highlight = "orange"),
+                        arrows = list(to = list(enabled = FALSE))) %>%
+  visNodes(size = 15, font = list(size = 22))
+
+# Dado este gráfico me centro en los pintores: Leonardo y Murillo:
+# Comienzo con Leonardo:
+coocurrencias_pintores_p_L <- cooc_p %>%
+  filter((term1 %in% nombres & term2 %in% nombres) & (term1 == "leonardo" | term2 == "leonardo"))
+
+#Represento nuevamente estas coocurrencias:
+
+wordnetwork <- graph_from_data_frame(head(coocurrencias_pintores_p_L, 120))
+ggraph(wordnetwork, layout = "fr") +
+  geom_edge_link(aes(width = cooc, edge_alpha = cooc), edge_colour = "deepskyblue") +
+  geom_node_text(aes(label = name), col = "darkgreen", size = 3) +
+  theme_graph(base_family = "sans") +
+  labs(title = "Coocurrencias (palabras próximas)", subtitle = "Leonardo") +
+  theme(plot.title = element_text(size = 14), plot.margin = margin(0,0,0,0))
+
+# Prosigo con Murillo:
+coocurrencias_pintores_p_M <- cooc_p %>%
+  filter((term1 %in% nombres & term2 %in% nombres) & (term1 == "murillo" | term2 == "murillo"))
+
+#Represento nuevamente estas coocurrencias:
+
+wordnetwork <- graph_from_data_frame(head(coocurrencias_pintores_p_M, 120))
+ggraph(wordnetwork, layout = "fr") +
+  geom_edge_link(aes(width = cooc, edge_alpha = cooc), edge_colour = "deepskyblue") +
+  geom_node_text(aes(label = name), col = "darkgreen", size = 3) +
+  theme_graph(base_family = "sans") +
+  labs(title = "Coocurrencias (palabras próximas)", subtitle = "Murillo") +
+  theme(plot.title = element_text(size = 14), plot.margin = margin(0,0,0,0))
+
+
+```
+
+De los gráficos anteriores se pueden sacar las siguientes temáticas:
+
+  · leonardo - mona - lisa
+  · leonardo - vinci
+  · leonardo - exposición
+  · leonardo - prado - conferencia
+  · murillo - hijo - pródigo - exposición
+  · murillo - antonio - serie - castillo
+  · murillo - arte - barroco - andaluz
+  · murillo - castillo - valdés - técnico
+  · murillo - castillo - leal - técnico
+  
+Paso ahora a analizar la cadena de texto Tornaviaje
+
+```{r 1.13. Clasificación tuits - Tornaviaje}
+
+#Selecciono tuits donde figura en el texto: el hashtag #Tornaviaje o la cadena de texto "Tornaviaje"
+
+tornav = prado %>%
+  filter(grepl("#Tornaviaje", text) | grepl("Tornaviaje", text))
+
+#Elimino duplicidades:
+
+tornav <- tornav %>%
+  distinct()
+
+# Se ordenan las observaciones en función de la varaible created_at:
+
+tornav <- tornav %>%
+  arrange(created_at) %>% select (-textmining)
+
+# Obtengo los cinco primero tuits más anteigüos
+
+head(tornav,5) %>% kbl(caption = "Primeros tuits relacionados con la exposición de Tornaviaje") %>% kable_minimal()
+
+
+```
+
+Paso ahora a analizar las cadenas de texto #HijoPródigoMurillo y Murillo
+
+```{r 1.14. Clasificación tuits - Murillo Hijo Pródigo}
+
+hijo_prodigo_murillo = prado %>%
+  filter(grepl("#HijoPródigoMurillo", text) | grepl("Murillo", text))
+
+#Elimino duplicidades:
+
+hijo_prodigo_murillo <- hijo_prodigo_murillo %>%
+  distinct()
+
+# Se ordenan las observaciones en función de la varaible created_at:
+
+hijo_prodigo_murillo <- hijo_prodigo_murillo %>%
+  arrange(created_at) %>% select (-textmining)
+
+# Obtengo los cinco primero tuits más anteigüos
+
+head(hijo_prodigo_murillo,5) %>% kbl(caption = "Primeros tuits relacionados la exposición de Murillo del Hijo Pródigo") %>% kable_minimal()
+
+
+```
+
+## Word embeddings
+
+Un word embedding es una representación matemática de palabras en un espacio vectorial de dimensiones reducidas. En lugar de tratar las palabras como entidades aisladas, los embeddings capturan relaciones semánticas y sintácticas entre ellas basándose en su contexto dentro de grandes corpus de texto.
+
+Se solicita llevar a cabo un Word embeddings teniendo en cuenta las siguientes consideraciones:
+
+o Modelo GloVe. El texto debe estar compuesto únicamente por los lemas que sean sustantivos,
+adjetivos o nombres propios.
+o Mostrar las similitudes de los términos: "murillo", "bernardino", "brueghel", "capilla".
+o Visualizar word embeddings mediante t‐SNE. Utilizar la perplejidad que se considere adecuada.
+
+De modo que, comienzo por el modelo Glove:
+
+```{r 1.15. Word embeddings - Modelo GloVe}
+
+#El modelo Glove utiliza la coocurrencia global de palabras para generar los vectores.
+
+# Montamos el listado de documentos con aquellos lemas que sean adjetivos, sustantivos o nombres propio únicamente
+
+terminos_MG <- subset(x, upos %in% c("NOUN", "ADJ", "PROPN"), select = c("doc_id", "lemma"))
+terminos_MG <- split(terminos_MG$lemma, terminos_MG$doc_id)
+terminos_MG <- lapply(terminos_MG, paste, collapse = " ")
+docs <- do.call(rbind.data.frame, terminos_MG)
+colnames(docs) <- "texto"
+docs$id <- as.numeric(names(terminos_MG))
+docs <- docs[order(docs$id), c("id", "texto")]
+row.names(docs) <- NULL
+
+# Creamos el Modelo GloVe.
+
+# Tokenización
+tokens <- space_tokenizer(docs$texto) # La función space_tokenizer divide las palabras por espacios
+it <- itoken(tokens, progressbar = FALSE) # La función itoken convierte los tokens en un iterado
+
+# Crear el vocabulario
+vocab <- create_vocabulary(it)
+vocab <- vocab[order(vocab$term_count, decreasing = T),] # Se ordenan los términos por su frecuencia en orden descendente
+vocab <- prune_vocabulary(vocab, term_count_min = 5) # Se elimnan las palabras que aparecen menos de 10 veces
+
+# Construir la matriz de coocurrencia de términos
+tcm <- create_tcm(it, vocab_vectorizer(vocab), skip_grams_window = 5) #La TCM cuenta cuántas veces aparecen juntas dos palabras dentro de una ventana de contexto, que en este caso es de 5 palabras (skip_grams_window = 5). Esto significa que se consideran palabras que están hasta 5 posiciones antes o después de una palabra dada.
+
+
+# Modelo GloVe
+set.seed(1) #Configuración
+glove <- GlobalVectors$new(rank = 20, x_max = 10) #Inicialización
+# rank: Define que los vectores de palabras tendrán n dimensiones.
+#x_max: Define un umbral para la ponderación de las coocurrencias; valores mayores que x_max tendrán menor peso.
+wv_main <- glove$fit_transform(tcm, n_iter = 50, n_threads = 1) # Entrenamiento
+#n_iter: El número de iteraciones para ajustar el modelo.
+#n_threads: Define el número de hilos (threads) que se utilizarán para el cálculo.
+#El método fit_transform ajusta el modelo GloVe a la matriz de coocurrencia tcm y devuelve los vectores de palabras entrenados (wv_main).
+
+# Se combinan los vectores principales y de contexto para obtener los vectores de palabras finales (word_vectors).
+wv_context <- glove$components
+word_vectors <- wv_main + t(wv_context)
+
+# Cuántas palabras contiene el vocabulario
+nrow(vocab)
+
+#282 palabras contiene el vocabulario en total
+
+```
+
+Pasamos a las similitudes:
+
+```{r 1.16. Word embeddings - Similitudes}
+
+#Una vez definida la función "similitudes" la aplico para las palabras "murillo", "bernardino", "brueghel" y "capilla". De modo que:
+
+similitudes("murillo") %>% kbl(caption = "Palabras que presentan similitudes con la palabra Murillo") %>% kable_minimal()
+similitudes("bernardino") %>% kbl(caption = "Palabras que presentan similitudes con la palabra Bernardino") %>% kable_minimal()
+similitudes("capilla") %>% kbl(caption = "Palabras que presentan similitudes con la palabra Capilla") %>% kable_minimal()
+similitudes("brueghel") %>% kbl(caption = "Palabras que presentan similitudes con la palabra Brueghel") %>% kable_minimal()
+
+```
+
+Terminamos con la visualización de los vectores de palabras mediante t-SNE
+
+```{r 1.17. Word embeddings - Visualización de los vectores de palabras mediante t-SNE}
+
+# La visualización de los vectores de palabras mediante t-SNE (t-Distributed Stochastic Neighbor Embedding) es una técnica que reduce la dimensionalidad de los vectores de palabras generados por modelos como GloVe, permitiendo representar estos vectores en un espacio bidimensional. Esto facilita la interpretación y análisis visual de las relaciones semánticas entre palabras, mostrando cómo palabras similares se agrupan juntas en el espacio reducido. La técnica es especialmente útil para explorar y entender la estructura de grandes conjuntos de datos de texto de manera intuitiva y visualmente atractiva.
+
+set.seed(123)
+tsne <- Rtsne(word_vectors, dims = 2, perplexity = 20, max_iter = 2000) # Aplicación de t-SNE (t-Distributed Stochastic Neighbor Embedding) para reducir su dimensionalidad a 2 dimensiones.
+# perplexity: Un parámetro que influye en la cantidad de vecinos considerados en el cálculo.
+tsne_plot <- data.frame(x = tsne$Y[,1], y = tsne$Y[,2], palabra = rownames(word_vectors))
+tsne_plot <- tsne_plot[1:250,]
+
+ggplot(tsne_plot, aes(x,y)) + geom_point() +
+  geom_text_repel(aes(label=palabra), size = 2.8, box.padding = 0.1, color = "blue") +
+  labs(title = "Prado - Modelo GloVe (t-SNE)", x = "", y = "") + theme_bw()
+
+# Saco el gráfico interactivo
+
+ggobj <- ggplot(tsne_plot, aes(x, y, tooltip = palabra, data_id = palabra)) +
+         geom_point_interactive() +
+         geom_text_repel(aes(label=palabra), size = 2.8, box.padding = 0.1, color = "blue") +
+         labs(title = "Prado - Modelo GloVe (t-SNE)", x = "", y = "") + theme_bw()
+
+girafe(ggobj = ggobj, width_svg = 9.6, height_svg = 8) %>%
+       girafe_options(opts_zoom(min = 1, max = 3))
+
+```
+
+# PREGUNTA 2: Clasificación de Texto: Análisis de sentimiento - dataframe reviews
+
+Para este ejercicio usaremos el dataset "reviews", el cual contiene 13.241 críticas sobre el alojamiento (hoteles, hostales, albergues, campings,…) en diversas ciudades de Andalucía.
+
+Según el enunciado, la descripción de las columnas del dataframe "reviews" es el siguiente:<br>
+<br>
+
+- **title**: Título, breve descripción de la crítica.
+- **review_text**: El texto de la crítica.
+- **rating**: La calificación del usuario, en una escala de 5 estrellas. Variable categórica, con cinco valores posibles: 1 (muy mal), 2 (mal), 3 (regular), 4 (bien), 5 (muy bien).
+
+Pasamos en primer lugar a la creación de un modelo de clasificación de texto basandome en el **rating**
+
+## Variable rating 5 niveles
+
+```{r 2.1. Modelo de clasificación de texto - Variable rating}
+
+#Paso la variable rating a factor
+reviews$rating <- factor(reviews$rating)
+table(reviews$rating)
+
+# Creo una nueva columna en el dataframe reviews que junte los textos de "title" y de "review text", de modo que:
+
+reviews$texto <- paste(reviews$title,reviews$review_text,sep = " - ")
+
+# Procedo a limpiar el texto, de modo que:
+
+reviews$textmining <- reviews$texto
+# Quitar "@usuario"
+reviews$textmining <- gsub("@\\w+", "", reviews$textmining) # La función gsub en R es utilizada para buscar patrones de texto específicos dentro de un string o vector de strings y reemplazarlos por otro texto
+# Quitar "#hashtag"
+reviews$textmining <- gsub("#\\w+", "", reviews$textmining)
+# Quitar "URL"
+reviews$textmining <- gsub("http[^[:blank:]]*", "", reviews$textmining)
+# Quitar "e-Mail"
+reviews$textmining <- gsub("\\w+@\\w+.\\w+", "", reviews$textmining)
+# Si fuera necesario, añadir espacio después de "punto","coma","punto y coma","dos puntos"
+reviews$textmining <- gsub("([.]|,|;|:)([[:alpha:]])", "\\1 \\2", reviews$textmining)
+# Conservar letras, dígitos, espacios en blanco, saltos de línea y caracteres de puntuación
+reviews$textmining <- gsub("[^[:alpha:][:digit:][:space:][:punct:]]*", "", reviews$textmining)
+# Eliminar espacios en blanco sobrantes
+reviews$textmining <- gsub("\\s{2,}", " ", reviews$textmining)
+# Elimino signos de puntuación
+reviews$textmining <- gsub("[\\?¿\"'-:ºª;,.¡!@#$%&/()='_+*{}<>^~|\\\\`‘–…’€]", "", reviews$textmining)
+# Otros
+
+# Crear una expresión regular para coincidir con emoticonos
+emoji_pattern <- "[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF\U0001F700-\U0001F77F\U0001F780-\U0001F7FF\U0001F800-\U0001F8FF\U0001F900-\U0001F9FF\U0001FA00-\U0001FA6F\U0001FA70-\U0001FAFF\U00002702-\U000027B0\U000024C2-\U0001F251]"
+
+# Reemplazar todos los emoticonos con una cadena vacía
+reviews$textmining <- str_replace_all(reviews$textmining, emoji_pattern, "")
+
+# Quitar espacios en blanco al inicio y final del texto
+reviews$textmining <- trimws(reviews$textmining) # La función trimws en R se utiliza para eliminar los espacios en blanco al principio y al final de una cadena de texto. Esta función es especialmente útil cuando se trabaja con datos de texto y se desea limpiar cualquier espacio extra que pueda haberse introducido accidentalmente. Aquí, trimws se aplica a la columna textmining del dataframe reviews, eliminando cualquier espacio en blanco al inicio y al final de cada cadena de texto en esa columna.
+
+reviews$textmining<- gsub("\\s{2,}", " ", reviews$textmining) #Reemplaza dos o mas espacio
+
+# Para crear el modelo, dividimos reviews en dos datasets: dataset de entrenamiento (con el 80% de las filas) y dataset de prueba (con el 20% de las filas restantes).
+
+# Aunque no se balancee el dataset, se toman muestras de entrenamiento y prueba con el mismo % de cada nivel que el dataset:
+
+id_uno <- which(reviews$rating==1)
+id_dos <- which(reviews$rating==2)
+id_tres <- which(reviews$rating==3)
+id_cuatro <- which(reviews$rating==4)
+id_cinco <- which(reviews$rating==5)
+
+set.seed(1)
+id_uno <- id_uno[sample(1:length(id_uno), length(id_uno) * 0.8)]
+set.seed(2)
+id_dos <- id_dos[sample(1:length(id_dos), length(id_dos) * 0.8)]
+set.seed(3)
+id_tres <- id_tres[sample(1:length(id_tres), length(id_tres) * 0.8)]
+set.seed(4)
+id_cuatro <- id_cuatro[sample(1:length(id_cuatro), length(id_cuatro) * 0.8)]
+set.seed(5)
+id_cinco <- id_cinco[sample(1:length(id_cinco), length(id_cinco) * 0.8)]
+
+#Creo los dataframes "train" y "test"
+train <- reviews[c(id_uno, id_dos,id_tres,id_cuatro,id_cinco),]
+test <- reviews[-c(id_uno, id_dos,id_tres,id_cuatro,id_cinco),]
+rm(id_uno, id_dos,id_tres,id_cuatro,id_cinco)
+
+#Creamos el modelo
+
+file_text <- tempfile()
+file_model <- tempfile()
+
+labels <- paste0("__label__", train$rating)
+train_text <- paste(labels, train$textmining)
+writeLines(text = train_text, con = file_text) #La función writeLines() en R se utiliza para escribir texto en un archivo
+
+# Ejecuto el modelo
+set.seed(123)
+execute(commands = c("supervised", "-input", file_text, "-output", file_model, "-dim", 20, "-lr", 1, "-epoch", 20, "-wordNgrams", 2, "-minn", 0, "-maxn", 0, "-verbose", 1))
+
+# Cargamos el modelo y obtenemos las predicciones.
+
+model <- load_model(paste0(file_model, ".bin"))
+predictions <- predict(model, sentences = test$textmining)
+
+test$predict <- names(unlist(predictions))
+test$predict <- factor(test$predict)
+test$predictprob <- unname(unlist(predictions))
+
+# Evaluo las predicciones obtenidas:
+
+test$ok <- ifelse(test$predict == test$rating, TRUE, FALSE)
+freq_table <- table(test$ok)
+
+# Calcular los porcentajes
+percentages <- prop.table(freq_table) * 100
+
+# Combinar frecuencias y porcentajes en un dataframe
+result <- rbind(
+  "Frequency" = freq_table,
+  "Percentage  (%)" = percentages
+)
+
+#Muestro los resultados:
+
+result %>% kbl(caption = "Resultados del modelo") %>% kable_minimal()
+
+# Acierta en un 65 % de los casos
+
+# Hallo la matriz de confusión:
+confusionMatrix(test$predict, test$rating)
+
+# Se concluye que el Accuracy no es muy alto
+
+```
+
+## Variable sentimiento 3 niveles
+
+A continaución se crea un modelo de clasificación de texto donde se tiene que categorizar la variable **rating** en 3 niveles (negativo, neutro y positivo):
+
+```{r 2.2. Modelo de clasificación de texto - Variable rating 3 niveles}
+
+# Reasigno los niveles a 3 categorías
+reviews$sentimiento <- factor(reviews$rating,
+                         levels = c("1", "2", "3", "4", "5"),
+                         labels = c("Negativo", "Negativo", "Neutro", "Positivo", "Positivo"))
+
+# Se comprueba que los niveles se han actualizado
+levels(reviews$sentimiento)
+
+# Aunque no se balancee el dataset, se toman muestras de entrenamiento y prueba con el mismo % de cada nivel que el dataset:
+
+id_neg <- which(reviews$sentimiento=="Negativo")
+id_neu <- which(reviews$sentimiento=="Neutro")
+id_pos <- which(reviews$sentimiento=="Positivo")
+
+set.seed(1)
+id_neg <- id_neg[sample(1:length(id_neg), length(id_neg) * 0.8)]
+set.seed(2)
+id_neu <- id_neu[sample(1:length(id_neu), length(id_neu) * 0.8)]
+set.seed(3)
+id_pos <- id_pos[sample(1:length(id_pos), length(id_pos) * 0.8)]
+
+
+#Creo los dataframes "train" y "test"
+train <- reviews[c(id_neg, id_neu,id_pos),]
+test <- reviews[-c(id_neg, id_neu,id_pos),]
+rm(id_neg, id_neu,id_pos)
+
+#Creamos el modelo
+
+file_text <- tempfile()
+file_model <- tempfile()
+
+labels <- paste0("__label__", train$sentimiento)
+train_text <- paste(labels, train$textmining)
+writeLines(text = train_text, con = file_text) #La función writeLines() en R se utiliza para escribir texto en un archivo
+
+# Ejecuto el modelo
+set.seed(123)
+execute(commands = c("supervised", "-input", file_text, "-output", file_model, "-dim", 20, "-lr", 1, "-epoch", 20, "-wordNgrams", 2, "-minn", 0, "-maxn", 0, "-verbose", 1))
+
+# Cargamos el modelo y obtenemos las predicciones.
+
+model <- load_model(paste0(file_model, ".bin"))
+predictions <- predict(model, sentences = test$textmining)
+
+test$predict <- names(unlist(predictions))
+test$predict <- factor(test$predict)
+test$predictprob <- unname(unlist(predictions))
+
+# Evaluo las predicciones obtenidas:
+
+test$ok <- ifelse(test$predict == test$sentimiento, TRUE, FALSE)
+freq_table <- table(test$ok)
+
+# Calcular los porcentajes
+percentages <- prop.table(freq_table) * 100
+
+# Combinar frecuencias y porcentajes en un dataframe
+result <- rbind(
+  "Frequency" = freq_table,
+  "Percentage  (%)" = percentages
+)
+
+#Muestro los resultados:
+
+result %>% kbl(caption = "Resultados del modelo") %>% kable_minimal()
+
+# Acierta en un 85,43 % de los casos
+
+# Hallo la matriz de confusión:
+confusionMatrix(test$predict, test$sentimiento)
+
+# Parece que con esta nueva clasificación, el modelo mejora considerablemente
+
+```
+## Variable sentimiento 2 niveles
+
+Finalmente, se crea un modelo de clasificación de texto donde se tiene que categorizar la variable **rating** en 2 niveles (negativo,  y positivo):
+
+```{r 2.3. Modelo de clasificación de texto - Variable rating 2 niveles}
+
+# Se eliminan todas aquellas instancias de el dataset review cuyo valor de la variable sentimiento sea igual a "neutro". De modo que:
+reviews = reviews %>% filter(sentimiento != "Neutro")
+
+#Elimino el nivel "Neutro" para que no lo tenga en consideración de ahora en adelante:
+reviews$sentimiento <- droplevels(reviews$sentimiento)
+
+# Se comprueba que los niveles se han actualizado
+levels(reviews$sentimiento)
+
+# Procedo con el modelo:
+
+# Aunque no se balancee el dataset, se toman muestras de entrenamiento y prueba con el mismo % de cada nivel que el dataset:
+
+id_neg <- which(reviews$sentimiento=="Negativo")
+id_pos <- which(reviews$sentimiento=="Positivo")
+
+set.seed(1)
+id_neg <- id_neg[sample(1:length(id_neg), length(id_neg) * 0.8)]
+set.seed(3)
+id_pos <- id_pos[sample(1:length(id_pos), length(id_pos) * 0.8)]
+
+
+#Creo los dataframes "train" y "test"
+train <- reviews[c(id_neg,id_pos),]
+test <- reviews[-c(id_neg,id_pos),]
+rm(id_neg,id_pos)
+
+#Creamos el modelo
+
+file_text <- tempfile()
+file_model <- tempfile()
+
+labels <- paste0("__label__", train$sentimiento)
+train_text <- paste(labels, train$textmining)
+writeLines(text = train_text, con = file_text) #La función writeLines() en R se utiliza para escribir texto en un archivo
+
+# Ejecuto el modelo
+set.seed(123)
+execute(commands = c("supervised", "-input", file_text, "-output", file_model, "-dim", 20, "-lr", 1, "-epoch", 20, "-wordNgrams", 2, "-minn", 0, "-maxn", 0, "-verbose", 1))
+
+# Cargamos el modelo y obtenemos las predicciones.
+
+model <- load_model(paste0(file_model, ".bin"))
+predictions <- predict(model, sentences = test$textmining)
+
+test$predict <- names(unlist(predictions))
+test$predict <- factor(test$predict)
+test$predictprob <- unname(unlist(predictions))
+
+# Evaluo las predicciones obtenidas:
+
+test$ok <- ifelse(test$predict == test$sentimiento, TRUE, FALSE)
+freq_table <- table(test$ok)
+
+# Calcular los porcentajes
+percentages <- prop.table(freq_table) * 100
+
+# Combinar frecuencias y porcentajes en un dataframe
+result <- rbind(
+  "Frequency" = freq_table,
+  "Percentage  (%)" = percentages
+)
+
+#Muestro los resultados:
+
+result %>% kbl(caption = "Resultados del modelo") %>% kable_minimal()
+
+# Acierta en un 97,3 % de los casos
+
+# Hallo la matriz de confusión:
+confusionMatrix(test$predict, test$sentimiento)
+
+# Parece que con esta nueva clasificación, el modelo mejora considerablemente
+
+```
+
+# PREGUNTA 3: Modelos LLM: Análisis de sentimiento
+
+Siguiendo con el escenario del punto anterior (5.3), sobre el dataset de prueba (test), debo seleccionar aquellas filas donde la predicción obtenida haya sido errónea.
+
+## Análisis de sentimiento: Selección filas erróneas
+
+```{r 3.1. Análisis de sentimiento - Selección filas erróneas}
+
+df_test_erronea = test %>% filter (ok == "FALSE")
+df_test_erronea_selected = df_test_erronea %>% select ("title","review_text","rating")
+head(df_test_erronea_selected) %>% kbl(caption = "Algunas review falladas por el modelo") %>% kable_minimal()
+
+df_test_erronea_selected$rating <- droplevels(df_test_erronea_selected$rating)
+
+freq_table_erronea <- table(df_test_erronea_selected$rating)
+
+# Calcular los porcentajes
+percentages_erronea <- prop.table(freq_table_erronea) * 100
+
+# Combinar frecuencias y porcentajes en un dataframe
+result_erronea <- rbind(
+  "Frequency" = freq_table_erronea,
+  "Percentage  (%)" = percentages_erronea
+)
+
+#Muestro los resultados:
+
+result_erronea %>% kbl(caption = "Observaciones falladas por Rating") %>% kable_minimal()
+
+# Los rating que más fallan son los 4.
+
+```
+
+## Análisis de sentimiento: Modelo LLM
+
+Debo crear un Modelo LLM para predecir el sentimiento en el dataset resultante.
+
+```{r 3.2. Análisis de sentimiento - Modelo LLM}
+
+# Un LLM (Large Language Model) es un modelo de lenguaje que consta de una red neuronal que utiliza una enorme cantidad parámetros (desde cientos de millones a miles de millones, o incluso más), entrenado con grandes cantidades de texto sin etiquetar mediante el aprendizaje automático no supervisado o semisupervisado.
+
+# Configuración de Python en R
+
+use_python("C:/Users/rosal/miniconda3/envs/transformers/python.exe")
+py_config()
+py_available() #Compruebo que "Python" está disponible en el sistema.
+pipeline <- import("transformers")$pipeline  # Importar el submódulo "pipeline" de "transformers".
+transformers = import("transformers")
+
+# Carga un modelo preentrenado para clasificación de secuencias.
+model <- transformers$AutoModelForSequenceClassification$from_pretrained("C:/Users/rosal/Documents/Modelos/finiteautomata/beto-sentiment-analysis")
+
+# Carga el tokenizador correspondiente para procesar el texto.
+tokenizer <- transformers$AutoTokenizer$from_pretrained("C:/Users/rosal/Documents/Modelos/finiteautomata/beto-sentiment-analysis")
+
+# Crea un pipeline para análisis de sentimientos utilizando el modelo especificado.
+clasificador <- pipeline(task = "sentiment-analysis",
+                         model = "C:/Users/rosal/Documents/Modelos/finiteautomata/beto-sentiment-analysis")
+
+# Oraciones a clasificar
+texto <- df_test_erronea$textmining
+
+# Ejecuto el modelo:
+output <- clasificador(texto) #Se sacan dataframes en los cuales se dice como clasifica un texto el dataframe y su puntuación.
+
+df <- do.call(rbind.data.frame, output)
+df$texto <- texto
+df <- df[order(df$label,df$score), c(3,1,2)]
+df_tabla = df  %>% select ("texto","label")
+
+head(df_tabla) %>% kbl(caption = "Clasificación de algunos textos") %>% kable_minimal()
+
+```
+
+
+Finalmente, sse muestran aquellas filas donde la predicción obtenida por el Modelo LLM ha sido errónea.
+
+## Análisis de sentimiento: Comprobación modelo
+
+```{r 3.3. Análisis de sentimiento - Comprobación modelo}
+
+df <- df %>% rename(textmining = texto)
+df$label = factor(df$label)
+levels (df$label) = c("Negativo","Neutro","Positivo")
+df = df %>% filter(label != "Neutro")
+df$label <- droplevels(df$label)
+levels(df$label)
+
+df_comparacion <- left_join(df_test_erronea, df, by = "textmining")
+df_comparacion <- df_comparacion %>% filter(!is.na(label))
+
+df_comparacion <- df_comparacion %>% filter(sentimiento != label) %>%
+  select(title, review_text, sentimiento)
+
+# Se muestran las reviews que el modelo ha fallado:
+
+df_comparacion %>% kbl(caption = "Resultados del modelo") %>% kable_minimal()
+
+```
+
